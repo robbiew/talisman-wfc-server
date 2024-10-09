@@ -2,7 +2,11 @@ module github.com/yourusername/talisman-wfc-server
 
 go 1.23.2
 
-require github.com/mattn/go-sqlite3 v1.14.24
+require (
+	github.com/hpcloud/tail v1.0.0
+	github.com/mattn/go-sqlite3 v1.14.24
+	modernc.org/sqlite v1.33.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
@@ -12,11 +16,12 @@ require (
 	github.com/ncruces/go-strftime v0.1.9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/sys v0.22.0 // indirect
+	gopkg.in/fsnotify.v1 v1.4.7 // indirect
+	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	modernc.org/gc/v3 v3.0.0-20240107210532-573471604cb6 // indirect
 	modernc.org/libc v1.55.3 // indirect
 	modernc.org/mathutil v1.6.0 // indirect
 	modernc.org/memory v1.8.0 // indirect
-	modernc.org/sqlite v1.33.1 // indirect
 	modernc.org/strutil v1.2.0 // indirect
 	modernc.org/token v1.1.0 // indirect
 )

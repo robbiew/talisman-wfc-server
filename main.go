@@ -15,7 +15,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Function to read the ini file and return the data path
 func getDataPathFromIni(filename string) (string, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -26,8 +25,6 @@ func getDataPathFromIni(filename string) (string, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-
-		// Look for "data path" in the ini file
 		if strings.HasPrefix(line, "data path") {
 			parts := strings.Split(line, "=")
 			if len(parts) == 2 {
@@ -35,7 +32,6 @@ func getDataPathFromIni(filename string) (string, error) {
 			}
 		}
 	}
-
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
@@ -43,12 +39,9 @@ func getDataPathFromIni(filename string) (string, error) {
 	return "", fmt.Errorf("data path not found in ini file")
 }
 
-// Connect to SQLite database using the extracted data path
 func connectToDatabase(dataPath string) (*sql.DB, error) {
-	// Assume that the users.sqlite3 file is in the data path
 	dbPath := filepath.Join(dataPath, "users.sqlite3")
 
-	// Debug: Print the absolute path
 	absolutePath, _ := filepath.Abs(dbPath)
 	fmt.Println("Trying to open database at absolute path:", absolutePath)
 
@@ -57,7 +50,6 @@ func connectToDatabase(dataPath string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open database: %v", err)
 	}
 
-	// Test if the database can be opened by pinging it
 	err = db.Ping()
 	if err != nil {
 		return nil, fmt.Errorf("database connection failed: %v", err)
@@ -66,38 +58,29 @@ func connectToDatabase(dataPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-// Function to hash the password + salt using SHA-256 and format it as uppercase hexadecimal
 func hashPassword(password, salt string) string {
 	concatenated := password + salt
 	hash := sha256.Sum256([]byte(concatenated))
-	// Convert the hash to an uppercase hexadecimal string
 	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
 
-// Function to authenticate a user
 func authenticateUser(db *sql.DB, username, password string) (bool, error) {
-	// Trim any leading/trailing whitespace and make username case-insensitive
 	username = strings.TrimSpace(username)
 	usernameLower := strings.ToLower(username)
 
 	var dbPassword, salt, userID string
 
-	// Query the users table for the given username
 	query := `SELECT id, password, salt FROM users WHERE LOWER(username) = ?`
 	err := db.QueryRow(query, usernameLower).Scan(&userID, &dbPassword, &salt)
 	if err != nil {
 		return false, fmt.Errorf("user not found: %v", err)
 	}
 
-	// Hash the provided password with the salt using the BBS's hashing method
 	hashedPassword := hashPassword(password, salt)
-
-	// Check if the hashed passwords match
 	if hashedPassword != dbPassword {
 		return false, fmt.Errorf("invalid password")
 	}
 
-	// Check the user's seclevel
 	var seclevel int
 	query = `SELECT value FROM details WHERE uid = ? AND attrib = 'seclevel'`
 	err = db.QueryRow(query, userID).Scan(&seclevel)
@@ -105,52 +88,89 @@ func authenticateUser(db *sql.DB, username, password string) (bool, error) {
 		return false, fmt.Errorf("failed to fetch seclevel: %v", err)
 	}
 
-	// Ensure seclevel is at least 100
 	if seclevel < 100 {
 		return false, fmt.Errorf("insufficient seclevel: %d", seclevel)
 	}
 
-	// Authentication successful
 	return true, nil
 }
 
-// Handle an incoming client connection
 func handleConnection(conn net.Conn, db *sql.DB) {
 	defer conn.Close()
 
-	// Set up reading from the client
 	clientReader := bufio.NewReader(conn)
+	clientWriter := bufio.NewWriter(conn)
 
-	// Ask for the username and password
-	conn.Write([]byte("Username: "))
-	username, _ := clientReader.ReadString('\n')
+	fmt.Println("New client connected")
+
+	// Send the username prompt with newline and flush
+	_, err := clientWriter.WriteString("Username: \n")
+	if err != nil {
+		fmt.Println("Error sending username prompt to client:", err)
+		return
+	}
+	err = clientWriter.Flush()
+	if err != nil {
+		fmt.Println("Error flushing username prompt:", err)
+		return
+	}
+	fmt.Println("Sent username prompt and flushed buffer")
+
+	// Read the username from the client
+	username, err := clientReader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading username from client:", err)
+		return
+	}
 	username = strings.TrimSpace(username)
+	fmt.Printf("Received username: %s\n", username)
 
-	conn.Write([]byte("Password: "))
-	password, _ := clientReader.ReadString('\n')
+	// Send the password prompt with newline and flush
+	_, err = clientWriter.WriteString("Password: \n")
+	if err != nil {
+		fmt.Println("Error sending password prompt to client:", err)
+		return
+	}
+	err = clientWriter.Flush()
+	if err != nil {
+		fmt.Println("Error flushing password prompt:", err)
+		return
+	}
+	fmt.Println("Sent password prompt and flushed buffer")
+
+	// Read the password from the client
+	password, err := clientReader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading password from client:", err)
+		return
+	}
 	password = strings.TrimSpace(password)
+	fmt.Printf("Received password for user %s\n", username)
 
 	// Attempt to authenticate the user
 	authenticated, err := authenticateUser(db, username, password)
 	if err != nil {
-		conn.Write([]byte(fmt.Sprintf("Authentication failed: %v\n", err)))
+		clientWriter.WriteString(fmt.Sprintf("Authentication failed: %v\n", err))
+		clientWriter.Flush()
+		fmt.Println("Authentication failed")
 		return
 	}
 
-	// Notify the client of successful authentication
+	// Notify the client of successful authentication and flush
 	if authenticated {
-		conn.Write([]byte("Authentication successful!\n"))
+		clientWriter.WriteString("Authentication successful!\n")
+		fmt.Println("User authenticated successfully")
 	} else {
-		conn.Write([]byte("Authentication failed: invalid credentials or insufficient seclevel.\n"))
+		clientWriter.WriteString("Authentication failed: invalid credentials or insufficient seclevel.\n")
+		fmt.Println("User authentication failed")
 	}
+	clientWriter.Flush()
 }
 
 func main() {
-	// Step 1: Use the flag package to parse the command line arguments
 	pathPtr := flag.String("path", ".", "Path to the BBS directory containing talisman.ini")
 	flag.Parse()
 
-	// Step 2: Read the talisman.ini file to get the data path
 	iniFile := filepath.Join(*pathPtr, "talisman.ini")
 	dataPath, err := getDataPathFromIni(iniFile)
 	if err != nil {
@@ -158,14 +178,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// If the dataPath from the ini file is relative, combine it with the --path directory
 	if !filepath.IsAbs(dataPath) {
 		dataPath = filepath.Join(*pathPtr, dataPath)
 	}
 
 	fmt.Println("Final Data path:", dataPath)
 
-	// Step 3: Load the users.sqlite3 database
 	db, err := connectToDatabase(dataPath)
 	if err != nil {
 		fmt.Println("Error connecting to database:", err)
@@ -173,8 +191,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// Step 4: Start the server and listen for incoming connections
-	listener, err := net.Listen("tcp", ":8080") // Listen on port 8080, adjust as needed
+	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
 		fmt.Println("Error starting server:", err)
 		os.Exit(1)
@@ -183,15 +200,12 @@ func main() {
 
 	fmt.Println("Server is running and waiting for connections on port 8080...")
 
-	// Accept incoming connections and handle them
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			fmt.Println("Error accepting connection:", err)
 			continue
 		}
-
-		// Handle the connection in a separate goroutine
 		go handleConnection(conn, db)
 	}
 }
