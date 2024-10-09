@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Function to read the ini file and return the data path
+// Read the Talisman ini file and return the data path
 func getDataPathFromIni(filename string) (string, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -66,7 +66,7 @@ func connectToDatabase(dataPath string) (*sql.DB, error) {
 }
 
 func authenticateUser(db *sql.DB, username, password string) (bool, error) {
-	// Trim any leading/trailing whitespace and make username case-insensitive
+	// Trim any leading/trailing whitespace and make username case-insensitive - not sure if necessary
 	username = strings.TrimSpace(username)
 	usernameLower := strings.ToLower(username)
 
@@ -96,7 +96,7 @@ func authenticateUser(db *sql.DB, username, password string) (bool, error) {
 			return false, fmt.Errorf("failed to fetch seclevel: %v", err)
 		}
 
-		// Ensure seclevel is at least 100
+		// Ensure seclevel is at least 100!
 		if seclevel < 100 {
 			return false, fmt.Errorf("insufficient seclevel: %d", seclevel)
 		}
@@ -150,7 +150,7 @@ func handleConnection(conn net.Conn, db *sql.DB) {
 }
 
 func main() {
-	// Step 1: Use the flag package to parse the command line arguments
+	// Use the flag package to parse the command line arguments
 	pathPtr := flag.String("path", ".", "Path to the BBS directory containing talisman.ini")
 	flag.Parse()
 
@@ -169,7 +169,7 @@ func main() {
 
 	fmt.Println("Final Data path:", dataPath)
 
-	// Step 3: Load the users.sqlite3 database
+	// Load the users.sqlite3 database
 	db, err := connectToDatabase(dataPath)
 	if err != nil {
 		fmt.Println("Error connecting to database:", err)
@@ -177,7 +177,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// Step 4: Start the server and listen for incoming connections
+	// Start the server and listen for incoming connections
 	listener, err := net.Listen("tcp", ":8080") // Listen on port 8080, adjust as needed
 	if err != nil {
 		fmt.Println("Error starting server:", err)
