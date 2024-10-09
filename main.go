@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net"
@@ -14,7 +15,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// Read the Talisman ini file and return the data path
+// Function to read the ini file and return the data path
 func getDataPathFromIni(filename string) (string, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -65,8 +66,17 @@ func connectToDatabase(dataPath string) (*sql.DB, error) {
 	return db, nil
 }
 
+// Function to hash the password + salt using SHA-256 and format it as uppercase hexadecimal
+func hashPassword(password, salt string) string {
+	concatenated := password + salt
+	hash := sha256.Sum256([]byte(concatenated))
+	// Convert the hash to an uppercase hexadecimal string
+	return strings.ToUpper(hex.EncodeToString(hash[:]))
+}
+
+// Function to authenticate a user
 func authenticateUser(db *sql.DB, username, password string) (bool, error) {
-	// Trim any leading/trailing whitespace and make username case-insensitive - not sure if necessary
+	// Trim any leading/trailing whitespace and make username case-insensitive
 	username = strings.TrimSpace(username)
 	usernameLower := strings.ToLower(username)
 
@@ -79,34 +89,29 @@ func authenticateUser(db *sql.DB, username, password string) (bool, error) {
 		return false, fmt.Errorf("user not found: %v", err)
 	}
 
-	// Try both password + salt and salt + password
-	hashedPassword1 := sha256.Sum256([]byte(password + salt)) // Password + Salt
-	hashedPasswordStr1 := fmt.Sprintf("%x", hashedPassword1)
+	// Hash the provided password with the salt using the BBS's hashing method
+	hashedPassword := hashPassword(password, salt)
 
-	hashedPassword2 := sha256.Sum256([]byte(salt + password)) // Salt + Password
-	hashedPasswordStr2 := fmt.Sprintf("%x", hashedPassword2)
-
-	// Check if either hashed password matches the one in the database
-	if hashedPasswordStr1 == dbPassword || hashedPasswordStr2 == dbPassword {
-		// Check the user's seclevel
-		var seclevel int
-		query = `SELECT value FROM details WHERE uid = ? AND attrib = 'seclevel'`
-		err = db.QueryRow(query, userID).Scan(&seclevel)
-		if err != nil {
-			return false, fmt.Errorf("failed to fetch seclevel: %v", err)
-		}
-
-		// Ensure seclevel is at least 100!
-		if seclevel < 100 {
-			return false, fmt.Errorf("insufficient seclevel: %d", seclevel)
-		}
-
-		// Authentication successful
-		return true, nil
+	// Check if the hashed passwords match
+	if hashedPassword != dbPassword {
+		return false, fmt.Errorf("invalid password")
 	}
 
-	// If neither hashed password matches, return an invalid password error
-	return false, fmt.Errorf("invalid password")
+	// Check the user's seclevel
+	var seclevel int
+	query = `SELECT value FROM details WHERE uid = ? AND attrib = 'seclevel'`
+	err = db.QueryRow(query, userID).Scan(&seclevel)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch seclevel: %v", err)
+	}
+
+	// Ensure seclevel is at least 100
+	if seclevel < 100 {
+		return false, fmt.Errorf("insufficient seclevel: %d", seclevel)
+	}
+
+	// Authentication successful
+	return true, nil
 }
 
 // Handle an incoming client connection
@@ -128,16 +133,7 @@ func handleConnection(conn net.Conn, db *sql.DB) {
 	// Attempt to authenticate the user
 	authenticated, err := authenticateUser(db, username, password)
 	if err != nil {
-		// Provide more detailed error messages for debugging purposes
-		if strings.Contains(err.Error(), "user not found") {
-			conn.Write([]byte("Authentication failed: user not found\n"))
-		} else if strings.Contains(err.Error(), "invalid password") {
-			conn.Write([]byte("Authentication failed: invalid password\n"))
-		} else if strings.Contains(err.Error(), "insufficient seclevel") {
-			conn.Write([]byte("Authentication failed: insufficient seclevel\n"))
-		} else {
-			conn.Write([]byte(fmt.Sprintf("Authentication failed: %v\n", err)))
-		}
+		conn.Write([]byte(fmt.Sprintf("Authentication failed: %v\n", err)))
 		return
 	}
 
@@ -150,7 +146,7 @@ func handleConnection(conn net.Conn, db *sql.DB) {
 }
 
 func main() {
-	// Use the flag package to parse the command line arguments
+	// Step 1: Use the flag package to parse the command line arguments
 	pathPtr := flag.String("path", ".", "Path to the BBS directory containing talisman.ini")
 	flag.Parse()
 
@@ -169,7 +165,7 @@ func main() {
 
 	fmt.Println("Final Data path:", dataPath)
 
-	// Load the users.sqlite3 database
+	// Step 3: Load the users.sqlite3 database
 	db, err := connectToDatabase(dataPath)
 	if err != nil {
 		fmt.Println("Error connecting to database:", err)
@@ -177,7 +173,7 @@ func main() {
 	}
 	defer db.Close()
 
-	// Start the server and listen for incoming connections
+	// Step 4: Start the server and listen for incoming connections
 	listener, err := net.Listen("tcp", ":8080") // Listen on port 8080, adjust as needed
 	if err != nil {
 		fmt.Println("Error starting server:", err)
