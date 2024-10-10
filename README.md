@@ -1,11 +1,4 @@
-You can download the content as `index.md` by creating the file in your repository. Here are the steps:
 
-1. Go to your repository on GitHub.
-2. Click on `Add file` and select `Create new file`.
-3. Name the file `index.md`.
-4. Copy and paste the following content into the file:
-
-```
 # Talisman WFC Server
 
 ## Overview
@@ -45,8 +38,6 @@ To connect to the Talisman WFC server with a client application, follow these st
 
 ## Additional Information
 The application authenticates users against an SQLite database and requires a certain security level for access. The log streaming is handled using the `tail` package to follow updates in real-time.
-```
 
-5. Click on `Commit new file` to save the changes.
 
-This will create the `index.md` file in your repository.
+
