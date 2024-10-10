@@ -37,7 +37,7 @@ To connect to the Talisman WFC server with a client application, follow these st
 4. Upon successful authentication, the server will start streaming the log file to the client.
 
 ## Client Code Example
-Here's an example client in Go that connects to the server ([GitHub link](https://github.com/robbiew/talisman-wfc-server)):
+Here's an example client in Go that connects to the server ([GitHub link](https://github.com/robbiew/talisman-wfc-client)):
 
 ```
 package main
