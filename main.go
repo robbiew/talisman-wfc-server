@@ -32,8 +32,8 @@ func hashPassword(password, salt string) string {
 	return strings.ToUpper(hex.EncodeToString(hash[:]))
 }
 
-// Authenticate user using the database
-func authenticateUser(db *sql.DB, username, password string) (bool, error) {
+// Authenticate user using the database and required seclevel
+func authenticateUser(db *sql.DB, username, password string, requiredSeclevel int) (bool, error) {
 	username = strings.TrimSpace(username)
 	usernameLower := strings.ToLower(username)
 
@@ -59,9 +59,9 @@ func authenticateUser(db *sql.DB, username, password string) (bool, error) {
 		return false, fmt.Errorf("failed to fetch seclevel: %v", err)
 	}
 
-	// Ensure seclevel is at least 100
-	if seclevel < 100 {
-		return false, fmt.Errorf("insufficient seclevel: %d", seclevel)
+	// Ensure the seclevel meets the required minimum
+	if seclevel < requiredSeclevel {
+		return false, fmt.Errorf("insufficient seclevel: %d, required: %d", seclevel, requiredSeclevel)
 	}
 
 	// Authentication successful
@@ -69,7 +69,7 @@ func authenticateUser(db *sql.DB, username, password string) (bool, error) {
 }
 
 // Handle incoming client connections, including authentication and streaming logs
-func handleClient(conn net.Conn, db *sql.DB, logFilePath string) {
+func handleClient(conn net.Conn, db *sql.DB, logFilePath string, requiredSeclevel int) {
 	defer conn.Close()
 
 	clientReader := bufio.NewReader(conn)
@@ -99,8 +99,8 @@ func handleClient(conn net.Conn, db *sql.DB, logFilePath string) {
 	}
 	password = strings.TrimSpace(password)
 
-	// Authenticate the user
-	authenticated, err := authenticateUser(db, username, password)
+	// Authenticate the user with the required seclevel
+	authenticated, err := authenticateUser(db, username, password, requiredSeclevel)
 	if err != nil {
 		clientWriter.WriteString(fmt.Sprintf("Authentication failed: %v\n", err))
 		clientWriter.Flush()
@@ -142,9 +142,18 @@ func handleClient(conn net.Conn, db *sql.DB, logFilePath string) {
 }
 
 func main() {
-	// Parse the command-line flag for the path to the BBS directory
-	pathPtr := flag.String("path", ".", "Path to the BBS directory containing talisman.ini")
+	// Parse command-line flags for the server port and required seclevel
+	port := flag.String("port", "", "Port number for the server (required)")
+	requiredSeclevel := flag.Int("seclevel", 100, "Required security level for user access (required)")
+	pathPtr := flag.String("path", "", "Path to the BBS directory containing talisman.ini (required)")
 	flag.Parse()
+
+	// Ensure all required flags are provided
+	if *port == "" || *requiredSeclevel == 100 || *pathPtr == "" {
+		fmt.Println("Error: --port, --seclevel, and --path flags are required")
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	// Load the configuration
 	dataPath, logPath, err := getPathsFromIni(filepath.Join(*pathPtr, "talisman.ini"))
@@ -175,14 +184,14 @@ func main() {
 	defer db.Close()
 
 	// Listen for incoming client connections
-	listener, err := net.Listen("tcp", ":8080")
+	listener, err := net.Listen("tcp", ":"+*port)
 	if err != nil {
 		fmt.Println("Error starting server:", err)
 		os.Exit(1)
 	}
 	defer listener.Close()
 
-	fmt.Println("Server is running and waiting for connections on port 8080...")
+	fmt.Printf("Server is running on port %s with required seclevel %d...\n", *port, *requiredSeclevel)
 
 	// Accept and handle incoming connections
 	for {
@@ -193,7 +202,7 @@ func main() {
 		}
 
 		// Handle the client connection in a new goroutine, including log streaming
-		go handleClient(conn, db, logFilePath)
+		go handleClient(conn, db, logFilePath, *requiredSeclevel)
 	}
 }
 
