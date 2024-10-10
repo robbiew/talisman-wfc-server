@@ -48,6 +48,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 )
 
 func main() {
@@ -63,30 +64,44 @@ func main() {
 	}
 	defer conn.Close()
 
-	// Get username and password input from the user
-	reader := bufio.NewReader(os.Stdin)
-
-	fmt.Print("Enter Username: ")
-	username, _ := reader.ReadString('\n')
-
-	fmt.Print("Enter Password: ")
-	password, _ := reader.ReadString('\n')
-
-	// Send the username and password to the server
-	conn.Write([]byte(username))
-	conn.Write([]byte(password))
-
-	// Continuously read from the server and display updates
+	// Create readers for the server and user input
 	serverReader := bufio.NewReader(conn)
+	clientReader := bufio.NewReader(os.Stdin)
+
+	// Step 1: Handle server's username and password prompts
 	for {
-		message, err := serverReader.ReadString('\n')
+		// Read the server's message (username or password prompt)
+		prompt, err := serverReader.ReadString('\n')
 		if err != nil {
 			fmt.Println("Error reading from server:", err)
+			return
+		}
+		fmt.Print(prompt)
+
+		// If the server sends "Authentication successful", break out of this loop and continue
+		if strings.Contains(prompt, "Authentication successful") {
 			break
 		}
-		fmt.Print(message)
+
+		// Get user input for the username or password
+		userInput, _ := clientReader.ReadString('\n')
+		userInput = strings.TrimSpace(userInput)
+
+		// Send the user input to the server
+		conn.Write([]byte(userInput + "\n"))
+	}
+
+	// Step 2: Continuously read updates from the server after authentication
+	for {
+		update, err := serverReader.ReadString('\n')
+		if err != nil {
+			fmt.Println("Error reading updates from server:", err)
+			break
+		}
+		fmt.Print(update)
 	}
 }
+
 ```
 
 Compile the client:
