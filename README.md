@@ -52,9 +52,18 @@ import (
 )
 
 func main() {
-	// Use the flag package to parse command-line arguments
-	serverAddr := flag.String("server", "localhost:8080", "Address of the server to connect to")
+	// Define command-line flags
+	serverAddr := flag.String("server", "", "Address of the server to connect to (e.g., localhost:8080)")
+
+	// Parse command-line flags
 	flag.Parse()
+
+	// Ensure that the required flags are set
+	if *serverAddr == "" {
+		fmt.Println("Error: --server flag is required")
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	// Connect to the server
 	conn, err := net.Dial("tcp", *serverAddr)
@@ -101,6 +110,7 @@ func main() {
 		fmt.Print(update)
 	}
 }
+
 
 ```
 
