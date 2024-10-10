@@ -12,36 +12,196 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/hpcloud/tail"
 	_ "modernc.org/sqlite"
 )
 
-func getDataPathFromIni(filename string) (string, error) {
-	file, err := os.Open(filename)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(line, "data path") {
-			parts := strings.Split(line, "=")
-			if len(parts) == 2 {
-				return strings.TrimSpace(parts[1]), nil
-			}
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return "", err
-	}
-
-	return "", fmt.Errorf("data path not found in ini file")
+// NodeStatus holds the current status of a node
+type NodeStatus struct {
+	User     string
+	Location string
 }
 
+// Track the node statuses and update them
+var nodeStatus = make(map[string]NodeStatus)
+
+// Function to hash the password + salt using SHA-256
+func hashPassword(password, salt string) string {
+	concatenated := password + salt
+	hash := sha256.Sum256([]byte(concatenated))
+	return strings.ToUpper(hex.EncodeToString(hash[:]))
+}
+
+// Authenticate user using the database
+func authenticateUser(db *sql.DB, username, password string) (bool, error) {
+	username = strings.TrimSpace(username)
+	usernameLower := strings.ToLower(username)
+
+	var dbPassword, salt, userID string
+
+	query := `SELECT id, password, salt FROM users WHERE LOWER(username) = ?`
+	err := db.QueryRow(query, usernameLower).Scan(&userID, &dbPassword, &salt)
+	if err != nil {
+		return false, fmt.Errorf("user not found: %v", err)
+	}
+
+	// Hash the provided password with the salt
+	hashedPassword := hashPassword(password, salt)
+	if hashedPassword != dbPassword {
+		return false, fmt.Errorf("invalid password")
+	}
+
+	// Check the user's security level (seclevel)
+	var seclevel int
+	query = `SELECT value FROM details WHERE uid = ? AND attrib = 'seclevel'`
+	err = db.QueryRow(query, userID).Scan(&seclevel)
+	if err != nil {
+		return false, fmt.Errorf("failed to fetch seclevel: %v", err)
+	}
+
+	// Ensure seclevel is at least 100
+	if seclevel < 100 {
+		return false, fmt.Errorf("insufficient seclevel: %d", seclevel)
+	}
+
+	// Authentication successful
+	return true, nil
+}
+
+// Handle incoming client connections, including authentication and streaming logs
+func handleClient(conn net.Conn, db *sql.DB, logFilePath string) {
+	defer conn.Close()
+
+	clientReader := bufio.NewReader(conn)
+	clientWriter := bufio.NewWriter(conn)
+
+	// Send the username prompt and flush
+	clientWriter.WriteString("Username: \n")
+	clientWriter.Flush()
+
+	// Read the username from the client
+	username, err := clientReader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading username from client:", err)
+		return
+	}
+	username = strings.TrimSpace(username)
+
+	// Send the password prompt and flush
+	clientWriter.WriteString("Password: \n")
+	clientWriter.Flush()
+
+	// Read the password from the client
+	password, err := clientReader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading password from client:", err)
+		return
+	}
+	password = strings.TrimSpace(password)
+
+	// Authenticate the user
+	authenticated, err := authenticateUser(db, username, password)
+	if err != nil {
+		clientWriter.WriteString(fmt.Sprintf("Authentication failed: %v\n", err))
+		clientWriter.Flush()
+		fmt.Println("Authentication failed")
+		return
+	}
+
+	if !authenticated {
+		clientWriter.WriteString("Authentication failed: Invalid credentials or insufficient seclevel.\n")
+		clientWriter.Flush()
+		fmt.Println("User authentication failed")
+		return
+	}
+
+	// Notify client of successful authentication
+	clientWriter.WriteString("Authentication successful!\n")
+	clientWriter.Flush()
+	fmt.Println("User authenticated successfully")
+
+	// Start streaming the log file to the client
+	fmt.Println("Starting to stream log file:", logFilePath)
+	t, err := tail.TailFile(logFilePath, tail.Config{Follow: true, ReOpen: true})
+	if err != nil {
+		fmt.Printf("Error tailing log file: %v\n", err)
+		clientWriter.WriteString("Error: Could not stream log file\n")
+		clientWriter.Flush()
+		return
+	}
+
+	// Stream the log updates to the client in real time
+	for line := range t.Lines {
+		_, err := clientWriter.WriteString(line.Text + "\n")
+		if err != nil {
+			fmt.Println("Error writing to client:", err)
+			return
+		}
+		clientWriter.Flush()
+	}
+}
+
+func main() {
+	// Parse the command-line flag for the path to the BBS directory
+	pathPtr := flag.String("path", ".", "Path to the BBS directory containing talisman.ini")
+	flag.Parse()
+
+	// Load the configuration
+	dataPath, logPath, err := getPathsFromIni(filepath.Join(*pathPtr, "talisman.ini"))
+	if err != nil {
+		fmt.Println("Error reading talisman.ini:", err)
+		os.Exit(1)
+	}
+
+	// If the dataPath from the ini file is relative, combine it with the --path directory
+	if !filepath.IsAbs(dataPath) {
+		dataPath = filepath.Join(*pathPtr, dataPath)
+	}
+
+	// If the logPath from the ini file is relative, combine it with the --path directory
+	if !filepath.IsAbs(logPath) {
+		logPath = filepath.Join(*pathPtr, logPath)
+	}
+
+	// Construct the full log file path
+	logFilePath := filepath.Join(logPath, "talisman.log")
+
+	// Connect to SQLite database
+	db, err := connectToDatabase(dataPath)
+	if err != nil {
+		fmt.Println("Error connecting to database:", err)
+		os.Exit(1)
+	}
+	defer db.Close()
+
+	// Listen for incoming client connections
+	listener, err := net.Listen("tcp", ":8080")
+	if err != nil {
+		fmt.Println("Error starting server:", err)
+		os.Exit(1)
+	}
+	defer listener.Close()
+
+	fmt.Println("Server is running and waiting for connections on port 8080...")
+
+	// Accept and handle incoming connections
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+
+		// Handle the client connection in a new goroutine, including log streaming
+		go handleClient(conn, db, logFilePath)
+	}
+}
+
+// Utility to connect to the SQLite database
 func connectToDatabase(dataPath string) (*sql.DB, error) {
 	dbPath := filepath.Join(dataPath, "users.sqlite3")
 
+	// Debugging: Print the absolute path of the database
 	absolutePath, _ := filepath.Abs(dbPath)
 	fmt.Println("Trying to open database at absolute path:", absolutePath)
 
@@ -58,154 +218,47 @@ func connectToDatabase(dataPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-func hashPassword(password, salt string) string {
-	concatenated := password + salt
-	hash := sha256.Sum256([]byte(concatenated))
-	return strings.ToUpper(hex.EncodeToString(hash[:]))
-}
-
-func authenticateUser(db *sql.DB, username, password string) (bool, error) {
-	username = strings.TrimSpace(username)
-	usernameLower := strings.ToLower(username)
-
-	var dbPassword, salt, userID string
-
-	query := `SELECT id, password, salt FROM users WHERE LOWER(username) = ?`
-	err := db.QueryRow(query, usernameLower).Scan(&userID, &dbPassword, &salt)
+// Utility to read both "data path" and "log path" from talisman.ini
+func getPathsFromIni(filename string) (string, string, error) {
+	file, err := os.Open(filename)
 	if err != nil {
-		return false, fmt.Errorf("user not found: %v", err)
+		return "", "", err
 	}
+	defer file.Close()
 
-	hashedPassword := hashPassword(password, salt)
-	if hashedPassword != dbPassword {
-		return false, fmt.Errorf("invalid password")
-	}
+	var dataPath, logPath string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
 
-	var seclevel int
-	query = `SELECT value FROM details WHERE uid = ? AND attrib = 'seclevel'`
-	err = db.QueryRow(query, userID).Scan(&seclevel)
-	if err != nil {
-		return false, fmt.Errorf("failed to fetch seclevel: %v", err)
-	}
-
-	if seclevel < 100 {
-		return false, fmt.Errorf("insufficient seclevel: %d", seclevel)
-	}
-
-	return true, nil
-}
-
-func handleConnection(conn net.Conn, db *sql.DB) {
-	defer conn.Close()
-
-	clientReader := bufio.NewReader(conn)
-	clientWriter := bufio.NewWriter(conn)
-
-	fmt.Println("New client connected")
-
-	// Send the username prompt with newline and flush
-	_, err := clientWriter.WriteString("Username: \n")
-	if err != nil {
-		fmt.Println("Error sending username prompt to client:", err)
-		return
-	}
-	err = clientWriter.Flush()
-	if err != nil {
-		fmt.Println("Error flushing username prompt:", err)
-		return
-	}
-	fmt.Println("Sent username prompt and flushed buffer")
-
-	// Read the username from the client
-	username, err := clientReader.ReadString('\n')
-	if err != nil {
-		fmt.Println("Error reading username from client:", err)
-		return
-	}
-	username = strings.TrimSpace(username)
-	fmt.Printf("Received username: %s\n", username)
-
-	// Send the password prompt with newline and flush
-	_, err = clientWriter.WriteString("Password: \n")
-	if err != nil {
-		fmt.Println("Error sending password prompt to client:", err)
-		return
-	}
-	err = clientWriter.Flush()
-	if err != nil {
-		fmt.Println("Error flushing password prompt:", err)
-		return
-	}
-	fmt.Println("Sent password prompt and flushed buffer")
-
-	// Read the password from the client
-	password, err := clientReader.ReadString('\n')
-	if err != nil {
-		fmt.Println("Error reading password from client:", err)
-		return
-	}
-	password = strings.TrimSpace(password)
-	fmt.Printf("Received password for user %s\n", username)
-
-	// Attempt to authenticate the user
-	authenticated, err := authenticateUser(db, username, password)
-	if err != nil {
-		clientWriter.WriteString(fmt.Sprintf("Authentication failed: %v\n", err))
-		clientWriter.Flush()
-		fmt.Println("Authentication failed")
-		return
-	}
-
-	// Notify the client of successful authentication and flush
-	if authenticated {
-		clientWriter.WriteString("Authentication successful!\n")
-		fmt.Println("User authenticated successfully")
-	} else {
-		clientWriter.WriteString("Authentication failed: invalid credentials or insufficient seclevel.\n")
-		fmt.Println("User authentication failed")
-	}
-	clientWriter.Flush()
-}
-
-func main() {
-	pathPtr := flag.String("path", ".", "Path to the BBS directory containing talisman.ini")
-	flag.Parse()
-
-	iniFile := filepath.Join(*pathPtr, "talisman.ini")
-	dataPath, err := getDataPathFromIni(iniFile)
-	if err != nil {
-		fmt.Println("Error reading talisman.ini:", err)
-		os.Exit(1)
-	}
-
-	if !filepath.IsAbs(dataPath) {
-		dataPath = filepath.Join(*pathPtr, dataPath)
-	}
-
-	fmt.Println("Final Data path:", dataPath)
-
-	db, err := connectToDatabase(dataPath)
-	if err != nil {
-		fmt.Println("Error connecting to database:", err)
-		os.Exit(1)
-	}
-	defer db.Close()
-
-	listener, err := net.Listen("tcp", ":8080")
-	if err != nil {
-		fmt.Println("Error starting server:", err)
-		os.Exit(1)
-	}
-	defer listener.Close()
-
-	fmt.Println("Server is running and waiting for connections on port 8080...")
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection:", err)
-			continue
+		// Look for "data path" in the ini file
+		if strings.HasPrefix(line, "data path") {
+			parts := strings.Split(line, "=")
+			if len(parts) == 2 {
+				dataPath = strings.TrimSpace(parts[1])
+			}
 		}
-		go handleConnection(conn, db)
+
+		// Look for "log path" in the ini file
+		if strings.HasPrefix(line, "log path") {
+			parts := strings.Split(line, "=")
+			if len(parts) == 2 {
+				logPath = strings.TrimSpace(parts[1])
+			}
+		}
 	}
+
+	if err := scanner.Err(); err != nil {
+		return "", "", err
+	}
+
+	if dataPath == "" {
+		return "", "", fmt.Errorf("data path not found in talisman.ini file")
+	}
+
+	if logPath == "" {
+		return "", "", fmt.Errorf("log path not found in talisman.ini file")
+	}
+
+	return dataPath, logPath, nil
 }
